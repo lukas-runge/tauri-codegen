@@ -10,10 +10,9 @@ use tempfile::tempdir;
 fn create_test_config(source_dir: PathBuf, output_dir: PathBuf) -> Config {
     Config {
         input: InputConfig {
-            source_dir,
+            source_dir: Some(source_dir),
             exclude: vec!["tests".to_string(), "target".to_string()],
-            use_cargo_expand: false,
-            cargo_manifest: None,
+            ..Default::default()
         },
         output: OutputConfig {
             types_file: output_dir.join("types.ts"),
@@ -232,10 +231,8 @@ pub fn get_user(id: i32) -> User {
 
     let config = Config {
         input: InputConfig {
-            source_dir: src_dir,
-            exclude: vec![],
-            use_cargo_expand: false,
-            cargo_manifest: None,
+            source_dir: Some(src_dir),
+            ..Default::default()
         },
         output: OutputConfig {
             types_file: output_dir.join("types.ts"),

@@ -67,6 +67,27 @@ impl Project {
         fs::write(&path, content).unwrap();
     }
 
+    /// Write a file at `relative` to the project root (e.g. another crate
+    /// of a workspace).
+    pub fn add_file(&self, relative: &str, content: &str) {
+        let path = self.dir.path().join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, content).unwrap();
+    }
+
+    /// Replace the `[input]` section of the config, keeping the outputs.
+    pub fn set_input_config(&self, input: &str) {
+        fs::write(
+            self.dir.path().join("tauri-codegen.toml"),
+            format!(
+                "[input]\n{input}\n[output]\ntypes_file = \"src/generated/types.ts\"\ncommands_file = \"src/generated/commands.ts\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
     pub fn root(&self) -> &Path {
         self.dir.path()
     }

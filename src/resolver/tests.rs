@@ -789,3 +789,97 @@ fn test_macro_generated_types_can_be_resolved() {
         res => panic!("Expected Found for macro-generated type, got {:?}", res),
     }
 }
+
+// --- multiple source directories ---------------------------------------
+//
+// Every source dir is its own crate root, so the module paths of two crates
+// overlap (`crate`, `crate::error`, ...). Lookups must stay inside the crate
+// of the file that asks, and `other_crate::...` must jump to that crate.
+
+/// Two crates that both have an `error` module defining `ErrorKind`, plus
+/// `app/src/lib.rs` importing it from its own crate.
+fn two_crate_resolver() -> ModuleResolver {
+    let mut resolver = ModuleResolver::new();
+    let app = PathBuf::from("app/src");
+    let core = PathBuf::from("core/src");
+    resolver
+        .parse_file(&app.join("error.rs"), "pub enum ErrorKind { A }", &app)
+        .unwrap();
+    resolver
+        .parse_file(&app.join("lib.rs"), "use crate::error::ErrorKind;", &app)
+        .unwrap();
+    resolver
+        .parse_file(&core.join("error.rs"), "pub enum ErrorKind { B }", &core)
+        .unwrap();
+    resolver
+        .parse_file(
+            &core.join("lib.rs"),
+            "pub mod error; pub mod model; pub use model::Rule;",
+            &core,
+        )
+        .unwrap();
+    resolver
+        .parse_file(&core.join("model.rs"), "pub struct Rule;", &core)
+        .unwrap();
+    resolver
+}
+
+#[test]
+fn test_crate_paths_stay_within_their_source_dir() {
+    let resolver = two_crate_resolver();
+
+    // `crate::error` exists in both crates; the app's own one must win
+    // instead of whichever file registered `["crate", "error"]` last.
+    match resolver.resolve_type("ErrorKind", Path::new("app/src/lib.rs")) {
+        ResolutionResult::Found(p) => assert_eq!(p, PathBuf::from("app/src/error.rs")),
+        res => panic!("expected app/src/error.rs, got {:?}", res),
+    }
+    match resolver.resolve_type("crate::error::ErrorKind", Path::new("core/src/lib.rs")) {
+        ResolutionResult::Found(p) => assert_eq!(p, PathBuf::from("core/src/error.rs")),
+        res => panic!("expected core/src/error.rs, got {:?}", res),
+    }
+}
+
+#[test]
+fn test_registered_crate_name_resolves_into_that_source_dir() {
+    let mut resolver = two_crate_resolver();
+
+    // Unregistered, `core_crate::error::ErrorKind` can only fall back to the
+    // by-name lookup, which is ambiguous.
+    let from = Path::new("app/src/lib.rs");
+    assert!(matches!(
+        resolver.resolve_type("core_crate::error::ErrorKind", from),
+        ResolutionResult::Ambiguous(_)
+    ));
+
+    resolver.register_crate("core_crate", Path::new("core/src"));
+    match resolver.resolve_type("core_crate::error::ErrorKind", from) {
+        ResolutionResult::Found(p) => assert_eq!(p, PathBuf::from("core/src/error.rs")),
+        res => panic!("expected core/src/error.rs, got {:?}", res),
+    }
+    // Re-export through the other crate's lib.rs.
+    match resolver.resolve_type("core_crate::Rule", from) {
+        ResolutionResult::Found(p) => assert_eq!(p, PathBuf::from("core/src/model.rs")),
+        res => panic!("expected core/src/model.rs, got {:?}", res),
+    }
+}
+
+#[test]
+fn test_imports_from_registered_crate() {
+    let mut resolver = two_crate_resolver();
+    resolver.register_crate("core_crate", Path::new("core/src"));
+
+    let cmd = PathBuf::from("app/src/commands.rs");
+    resolver
+        .parse_file(
+            &cmd,
+            "use core_crate::error::ErrorKind;",
+            Path::new("app/src"),
+        )
+        .unwrap();
+
+    match resolver.resolve_type("ErrorKind", &cmd) {
+        ResolutionResult::Found(p) => assert_eq!(p, PathBuf::from("core/src/error.rs")),
+        res => panic!("expected core/src/error.rs, got {:?}", res),
+    }
+}

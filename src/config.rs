@@ -14,20 +14,46 @@ pub struct Config {
 }
 
 /// Input configuration - where to find Rust source files
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputConfig {
-    /// Directory to scan for Rust files
-    pub source_dir: PathBuf,
+    /// Single directory to scan for Rust files. Kept for backward
+    /// compatibility; mutually exclusive with `source_dirs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dir: Option<PathBuf>,
+    /// Directories to scan for Rust files, e.g. the `src` dir of every crate
+    /// in a Cargo workspace. Each directory is treated as its own crate root.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_dirs: Vec<PathBuf>,
     /// Directories or files to exclude from scanning
     #[serde(default)]
     pub exclude: Vec<String>,
     /// Use cargo expand to handle macro-generated types (slower but more complete)
     #[serde(default)]
     pub use_cargo_expand: bool,
-    /// Cargo manifest path for cargo expand (defaults to Cargo.toml in source_dir parent)
+    /// Cargo manifest path for cargo expand (defaults to the Cargo.toml
+    /// found above the first source directory)
     #[serde(default)]
     pub cargo_manifest: Option<PathBuf>,
+}
+
+impl InputConfig {
+    /// The directories to scan: `source_dirs`, or `[source_dir]` for
+    /// single-directory configs. Errors when both or neither are set.
+    pub fn source_roots(&self) -> Result<Vec<&Path>> {
+        match (&self.source_dir, self.source_dirs.is_empty()) {
+            (Some(_), false) => anyhow::bail!(
+                "Both `source_dir` and `source_dirs` are set in [input]. \
+                Use only one of them (`source_dirs` for multiple directories)."
+            ),
+            (Some(dir), true) => Ok(vec![dir.as_path()]),
+            (None, false) => Ok(self.source_dirs.iter().map(PathBuf::as_path).collect()),
+            (None, true) => anyhow::bail!(
+                "No source directory configured. Set `source_dirs = [\"src-tauri/src\"]` \
+                (or `source_dir = \"src-tauri/src\"`) in [input]."
+            ),
+        }
+    }
 }
 
 /// Output configuration - where to write generated TypeScript files
@@ -74,11 +100,31 @@ impl Config {
 
     /// Validate the configuration (pure validation, no side effects)
     fn validate(&self) -> Result<()> {
-        if !self.input.source_dir.exists() {
-            anyhow::bail!(
-                "Source directory does not exist: {}",
-                self.input.source_dir.display()
-            );
+        let roots = self.input.source_roots()?;
+        for dir in &roots {
+            if !dir.exists() {
+                anyhow::bail!("Source directory does not exist: {}", dir.display());
+            }
+        }
+
+        // Overlapping directories would scan the same files twice and turn
+        // every command in them into a "duplicate command name" error.
+        // Compare canonical paths so `./src` and `src` count as the same.
+        let canonical: Vec<PathBuf> = roots
+            .iter()
+            .map(|dir| fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+            .collect();
+        for (i, a) in canonical.iter().enumerate() {
+            for (j, b) in canonical.iter().enumerate() {
+                if i != j && b.starts_with(a) {
+                    anyhow::bail!(
+                        "Source directories overlap: {} contains {}. \
+                        List each directory only once and don't nest them.",
+                        roots[i].display(),
+                        roots[j].display()
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -110,10 +156,9 @@ impl Config {
     pub fn default_config() -> Self {
         Config {
             input: InputConfig {
-                source_dir: PathBuf::from("src-tauri/src"),
+                source_dir: Some(PathBuf::from("src-tauri/src")),
                 exclude: vec!["tests".to_string(), "target".to_string()],
-                use_cargo_expand: false,
-                cargo_manifest: None,
+                ..Default::default()
             },
             output: OutputConfig {
                 types_file: PathBuf::from("src/generated/types.ts"),
@@ -145,7 +190,10 @@ mod tests {
     fn test_default_config() {
         let config = Config::default_config();
 
-        assert_eq!(config.input.source_dir, PathBuf::from("src-tauri/src"));
+        assert_eq!(
+            config.input.source_dir,
+            Some(PathBuf::from("src-tauri/src"))
+        );
         assert!(config.input.exclude.contains(&"tests".to_string()));
         assert!(config.input.exclude.contains(&"target".to_string()));
         assert_eq!(
@@ -185,7 +233,8 @@ commands_file = "commands.ts"
 
         let config = Config::load(&config_path).unwrap();
 
-        assert_eq!(config.input.source_dir, source_dir);
+        assert_eq!(config.input.source_dir, Some(source_dir.clone()));
+        assert_eq!(config.input.source_roots().unwrap(), vec![source_dir]);
         assert_eq!(config.input.exclude, vec!["tests"]);
         assert_eq!(config.output.types_file, PathBuf::from("types.ts"));
     }
@@ -351,6 +400,109 @@ commands_file = "commands.ts"
             .contains("Source directory does not exist"));
     }
 
+    /// Write `input_section` as the `[input]` table of a config in `dir`
+    /// and load it.
+    fn load_with_input(dir: &Path, input_section: &str) -> Result<Config> {
+        let config_path = dir.join("config.toml");
+        fs::write(
+            &config_path,
+            format!(
+                "[input]\n{input_section}\n[output]\ntypes_file = \"types.ts\"\ncommands_file = \"commands.ts\"\n"
+            ),
+        )
+        .unwrap();
+        Config::load(&config_path)
+    }
+
+    #[test]
+    fn test_load_source_dirs() {
+        let dir = tempdir().unwrap();
+        let app = dir.path().join("app/src");
+        let core = dir.path().join("core/src");
+        fs::create_dir_all(&app).unwrap();
+        fs::create_dir_all(&core).unwrap();
+
+        let config = load_with_input(
+            dir.path(),
+            &format!("source_dirs = ['{}', '{}']", app.display(), core.display()),
+        )
+        .unwrap();
+
+        assert_eq!(config.input.source_dir, None);
+        assert_eq!(config.input.source_roots().unwrap(), vec![app, core]);
+    }
+
+    #[test]
+    fn test_source_dir_and_source_dirs_are_mutually_exclusive() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        let err = load_with_input(
+            dir.path(),
+            &format!("source_dir = '{0}'\nsource_dirs = ['{0}']", src.display()),
+        )
+        .unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("Both `source_dir` and `source_dirs`"),
+            "got:\n{msg}"
+        );
+    }
+
+    #[test]
+    fn test_missing_source_dir_and_source_dirs() {
+        let dir = tempdir().unwrap();
+
+        for input in ["", "source_dirs = []"] {
+            let err = load_with_input(dir.path(), input).unwrap_err();
+            let msg = format!("{:#}", err);
+            assert!(
+                msg.contains("No source directory configured"),
+                "input {input:?}, got:\n{msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_source_dirs_reports_the_missing_entry() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        let missing = dir.path().join("crates/missing/src");
+
+        let err = load_with_input(
+            dir.path(),
+            &format!(
+                "source_dirs = ['{}', '{}']",
+                src.display(),
+                missing.display()
+            ),
+        )
+        .unwrap_err();
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("Source directory does not exist"), "{msg}");
+        assert!(msg.contains("missing"), "{msg}");
+    }
+
+    #[test]
+    fn test_source_dirs_must_not_overlap() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("app/src");
+        fs::create_dir_all(&src).unwrap();
+
+        // Nested directories and the same directory listed twice would both
+        // scan files twice.
+        for dirs in [
+            format!("['{}', '{}']", dir.path().display(), src.display()),
+            format!("['{0}', '{0}']", src.display()),
+        ] {
+            let err = load_with_input(dir.path(), &format!("source_dirs = {dirs}")).unwrap_err();
+            let msg = format!("{:#}", err);
+            assert!(msg.contains("Source directories overlap"), "{msg}");
+        }
+    }
+
     #[test]
     fn test_save_config() {
         let dir = tempdir().unwrap();
@@ -358,10 +510,9 @@ commands_file = "commands.ts"
 
         let config = Config {
             input: InputConfig {
-                source_dir: PathBuf::from("src"),
+                source_dir: Some(PathBuf::from("src")),
                 exclude: vec!["tests".to_string()],
-                use_cargo_expand: false,
-                cargo_manifest: None,
+                ..Default::default()
             },
             output: OutputConfig {
                 types_file: PathBuf::from("types.ts"),
@@ -379,6 +530,10 @@ commands_file = "commands.ts"
 
         let content = fs::read_to_string(&config_path).unwrap();
         assert!(content.contains("source_dir = \"src\""));
+        // An unset `source_dirs` must not leak into the file: writing
+        // `source_dirs = []` next to `source_dir` would read back fine, but
+        // it's noise for the user editing the generated config.
+        assert!(!content.contains("source_dirs"));
         assert!(content.contains("types_file = \"types.ts\""));
         assert!(content.contains("type_prefix = \"I\""));
     }

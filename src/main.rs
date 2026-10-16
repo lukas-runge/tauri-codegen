@@ -45,6 +45,7 @@ fn run_init(output_path: &std::path::Path, force: bool) -> Result<()> {
     println!("Created configuration file: {}", output_path.display());
     println!("\nEdit the file to configure:");
     println!("  - source_dir: Path to your Rust source files");
+    println!("    (or source_dirs = [...] to scan several crates of a workspace)");
     println!("  - types_file: Output path for TypeScript types");
     println!("  - commands_file: Output path for TypeScript commands");
     println!("  - exclude: Directories to skip during scanning");

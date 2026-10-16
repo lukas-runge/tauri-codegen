@@ -84,10 +84,9 @@ fn main() {
 
     let config = Config {
         input: InputConfig {
-            source_dir: PathBuf::from("src"),
+            source_dirs: vec![PathBuf::from("src")],
             exclude: vec!["tests".into()],
-            use_cargo_expand: false,
-            cargo_manifest: None,
+            ..Default::default()
         },
         output: OutputConfig {
             // Write into the frontend tree, outside the src-tauri crate.
@@ -127,9 +126,30 @@ Defines where the generator looks for code.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `source_dir` | Root directory of your Rust source code. | `"src-tauri/src"` |
-| `exclude` | List of directories or files to ignore. | `["tests", "target"]` |
+| `source_dirs` | Several source directories, e.g. one per crate of a Cargo workspace. Use instead of `source_dir` (setting both is an error). | — |
+| `exclude` | Directory or file names to skip. An entry matches any path component with exactly that name, in every source directory. | `["tests", "target"]` |
 | `use_cargo_expand` | Enable to discover macro-generated types **and** `#[tauri::command]` functions (requires `cargo-expand` installed). | `false` |
-| `cargo_manifest` | Path to `Cargo.toml` for `cargo-expand`. Auto-detected if empty. | `None` |
+| `cargo_manifest` | Path to `Cargo.toml` for `cargo-expand`. Auto-detected from the first source directory if empty. | `None` |
+
+Paths are relative to the directory you run the generator in (usually the project root, next to `tauri-codegen.toml`).
+
+#### Cargo workspaces
+
+When your commands use types from other crates of the workspace, list each crate's `src` directory:
+
+```toml
+[input]
+source_dirs = [
+    "src-tauri/src",
+    "crates/domain/src",
+    "crates/client/src",
+]
+exclude = ["tests"]
+```
+
+Commands are discovered in all directories, and types are resolved across them. Each directory is treated as the root of its own crate, so `crate::` paths stay inside the crate they're written in. Paths through another crate's name (`use domain::model::Rule;`) are resolved into that crate when its `Cargo.toml` sits next to the listed `src` directory; otherwise the type is looked up by name across all directories.
+
+Directories must not overlap (e.g. `"."` together with `"src-tauri/src"`), since that would scan files twice. All generated types still share one TypeScript namespace: two reachable types with the same name from different crates are reported as a conflict.
 
 ### `[output]` Section
 Defines where the generated TypeScript files are saved.

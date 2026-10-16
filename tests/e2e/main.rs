@@ -23,3 +23,4 @@ mod serde_features;
 mod smart_pointers;
 mod snapshots;
 mod struct_shapes;
+mod workspace;

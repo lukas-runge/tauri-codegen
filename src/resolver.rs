@@ -38,6 +38,9 @@ pub enum ResolutionResult {
 /// Represents a parsed file with its imports and local types
 #[derive(Debug, Default)]
 pub struct FileScope {
+    /// Source directory the file was scanned from. Acts as the crate root:
+    /// `crate::` paths in this file resolve against files with the same root.
+    pub crate_root: PathBuf,
     /// Module path (e.g., ["crate", "commands"] for src/commands.rs)
     pub module_path: ModulePath,
     /// Types defined locally in this file (name -> kind)
@@ -75,8 +78,12 @@ pub struct ModuleResolver {
     pub(crate) files: HashMap<PathBuf, FileScope>,
     /// Type name -> list of files that define it
     pub(crate) type_definitions: HashMap<String, Vec<PathBuf>>,
-    /// Module path -> file path (e.g., ["crate", "internal"] -> src/internal.rs)
-    pub(crate) module_to_file: HashMap<Vec<String>, PathBuf>,
+    /// Crate root -> module path -> file path
+    /// (e.g., src -> ["crate", "internal"] -> src/internal.rs). Keyed by root
+    /// so `crate::error` in one source dir never resolves into another.
+    pub(crate) module_to_file: HashMap<PathBuf, HashMap<ModulePath, PathBuf>>,
+    /// Crate name (as written in paths, e.g. `sieve_core`) -> crate root.
+    pub(crate) crate_roots: HashMap<String, PathBuf>,
 }
 
 impl ModuleResolver {
@@ -94,6 +101,39 @@ impl ModuleResolver {
     /// Read-only access to the scope recorded for a given source file.
     pub fn file_scope(&self, path: &Path) -> Option<&FileScope> {
         self.files.get(path)
+    }
+
+    /// Declare that paths starting with `crate_name::` refer to the crate
+    /// whose files were parsed with `crate_root` as base path. Lets
+    /// `use other_crate::model::Rule` resolve precisely across source
+    /// directories instead of falling back to a by-name lookup.
+    pub fn register_crate(&mut self, crate_name: &str, crate_root: &Path) {
+        self.crate_roots
+            .insert(crate_name.to_string(), crate_root.to_path_buf());
+    }
+
+    /// Look up the file for an absolute module path within a crate root.
+    fn module_file(&self, crate_root: &Path, module_path: &[String]) -> Option<&PathBuf> {
+        self.module_to_file.get(crate_root)?.get(module_path)
+    }
+
+    /// Rewrite a path that starts with a registered crate name
+    /// (`other_crate::model::Rule`) to that crate's root and a `crate::`
+    /// path. Other paths keep `crate_root`.
+    fn locate_crate<'p>(
+        &'p self,
+        module_path: &'p [String],
+        crate_root: &'p Path,
+    ) -> (&'p Path, std::borrow::Cow<'p, [String]>) {
+        if let Some(root) = module_path
+            .first()
+            .and_then(|first| self.crate_roots.get(first))
+        {
+            let mut path = vec!["crate".to_string()];
+            path.extend(module_path[1..].iter().cloned());
+            return (root.as_path(), std::borrow::Cow::Owned(path));
+        }
+        (crate_root, std::borrow::Cow::Borrowed(module_path))
     }
 
     /// Resolve a type name in the context of a specific file
@@ -133,7 +173,7 @@ impl ModuleResolver {
 
         // 2. Check explicit imports
         if let Some(imported) = scope.imports.get(name) {
-            let result = self.resolve_module_path(&imported.path);
+            let result = self.resolve_module_path(&imported.path, &scope.crate_root);
             return self.wrap_alias_if_needed(result, name, &imported.path);
         }
 
@@ -141,7 +181,7 @@ impl ModuleResolver {
         for wildcard_path in &scope.wildcard_imports {
             // Normalize relative path to absolute path
             let full_path = self.normalize_relative_path(wildcard_path, &scope.module_path);
-            if let Some(file) = self.find_type_in_module(name, &full_path) {
+            if let Some(file) = self.find_type_in_module(name, &full_path, &scope.crate_root) {
                 return ResolutionResult::Found(file);
             }
         }
@@ -208,13 +248,19 @@ impl ModuleResolver {
             // result path = ["crate", "utils", "wrapper", "MyType"]
             let mut full_path = imported.path.clone();
             full_path.extend(segments[1..].iter().map(|s| s.to_string()));
-            return self.resolve_module_path(&full_path);
+            return self.resolve_module_path(&full_path, &scope.crate_root);
         }
 
-        // 2. Standard canonical path resolution
+        // 2. Path into another scanned crate (`other_crate::model::Rule`)
+        if self.crate_roots.contains_key(first) {
+            let full_path: Vec<String> = segments.iter().map(|s| s.to_string()).collect();
+            return self.resolve_module_path(&full_path, &scope.crate_root);
+        }
+
+        // 3. Standard canonical path resolution
         let path_result = self.resolve_canonical_path(segments, scope);
         match path_result {
-            Some(path) => self.resolve_module_path(&path),
+            Some(path) => self.resolve_module_path(&path, &scope.crate_root),
             None => ResolutionResult::NotFound,
         }
     }
@@ -253,8 +299,11 @@ impl ModuleResolver {
         Some(current_path)
     }
 
-    /// Resolve an absolute path (["crate", "mod", "Type"]) to a file
-    fn resolve_module_path(&self, module_path: &[String]) -> ResolutionResult {
+    /// Resolve an absolute path (["crate", "mod", "Type"]) to a file.
+    /// `crate::` paths are looked up in `crate_root`; paths starting with a
+    /// registered crate name are looked up in that crate.
+    fn resolve_module_path(&self, module_path: &[String], crate_root: &Path) -> ResolutionResult {
+        let (crate_root, module_path) = self.locate_crate(module_path, crate_root);
         if module_path.len() < 2 {
             return ResolutionResult::NotFound;
         }
@@ -264,7 +313,7 @@ impl ModuleResolver {
         let type_name = &module_path[module_path.len() - 1];
         let mod_path = &module_path[..module_path.len() - 1];
 
-        if let Some(file_path) = self.module_to_file.get(mod_path) {
+        if let Some(file_path) = self.module_file(crate_root, mod_path) {
             if let Some(scope) = self.files.get(file_path) {
                 // 1. Check local definition
                 if scope.local_types.contains_key(type_name) {
@@ -283,7 +332,9 @@ impl ModuleResolver {
                 for wildcard_path in &scope.wildcard_imports {
                     // Normalize relative path to absolute path
                     let full_path = self.normalize_relative_path(wildcard_path, &scope.module_path);
-                    if let Some(found_file) = self.find_type_in_module(type_name, &full_path) {
+                    if let Some(found_file) =
+                        self.find_type_in_module(type_name, &full_path, &scope.crate_root)
+                    {
                         return ResolutionResult::Found(found_file);
                     }
                 }
@@ -344,8 +395,14 @@ impl ModuleResolver {
     }
 
     /// Find type in module (for wildcard imports)
-    fn find_type_in_module(&self, type_name: &str, module_path: &[String]) -> Option<PathBuf> {
-        if let Some(file_path) = self.module_to_file.get(module_path) {
+    fn find_type_in_module(
+        &self,
+        type_name: &str,
+        module_path: &[String],
+        crate_root: &Path,
+    ) -> Option<PathBuf> {
+        let (crate_root, module_path) = self.locate_crate(module_path, crate_root);
+        if let Some(file_path) = self.module_file(crate_root, &module_path) {
             if let Some(scope) = self.files.get(file_path) {
                 if scope.local_types.contains_key(type_name) {
                     return Some(file_path.clone());
@@ -394,7 +451,7 @@ impl ModuleResolver {
             // Check imported type aliases
             if let Some(imported) = scope.imports.get(type_name) {
                 if let ResolutionResult::Found(source_file) =
-                    self.resolve_module_path(&imported.path)
+                    self.resolve_module_path(&imported.path, &scope.crate_root)
                 {
                     if let Some(source_scope) = self.files.get(&source_file) {
                         let actual_name = imported

@@ -26,11 +26,14 @@ impl ModuleResolver {
         }
     }
 
-    /// Parse a file and extract its scope (imports, local types, submodules)
+    /// Parse a file and extract its scope (imports, local types, submodules).
+    /// `base_path` is the source directory the file belongs to; it is the
+    /// root for the file's module path and for its `crate::` paths.
     pub fn parse_file(&mut self, path: &Path, content: &str, base_path: &Path) -> Result<()> {
         let syntax = syn::parse_file(content)?;
 
         let mut scope = FileScope {
+            crate_root: base_path.to_path_buf(),
             module_path: self.path_to_module(path, base_path),
             ..Default::default()
         };
@@ -39,6 +42,8 @@ impl ModuleResolver {
         self.parse_items(&syntax.items, path, &mut scope);
 
         self.module_to_file
+            .entry(base_path.to_path_buf())
+            .or_default()
             .insert(scope.module_path.clone(), path.to_path_buf());
         self.files.insert(path.to_path_buf(), scope);
 

@@ -360,12 +360,14 @@ fn parse_files_picks_up_macro_generated_commands_from_expanded_code() {
         pub use __cmd__subscribe_secret_watch;
     "#;
 
-    let mut config = crate::config::Config::default_config();
-    config.input.source_dir = src_dir.clone();
+    let source_file = SourceFile {
+        path: raw_path,
+        root: src_dir.clone(),
+    };
 
     let pipeline = Pipeline::new(false);
     let (commands, _resolver, _expanded_types) = pipeline
-        .parse_files(&[raw_path], &config, Some(expanded_code))
+        .parse_files(&[source_file], &[&src_dir], Some(expanded_code))
         .expect("parse_files should succeed");
 
     let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
@@ -416,16 +418,14 @@ fn parse_files_keeps_source_path_when_command_exists_in_both() {
         pub use __cmd__list_pods;
     "#;
 
-    let mut config = crate::config::Config::default_config();
-    config.input.source_dir = src_dir.clone();
+    let source_file = SourceFile {
+        path: raw_path.clone(),
+        root: src_dir.clone(),
+    };
 
     let pipeline = Pipeline::new(false);
     let (commands, _resolver, _expanded_types) = pipeline
-        .parse_files(
-            std::slice::from_ref(&raw_path),
-            &config,
-            Some(expanded_code),
-        )
+        .parse_files(&[source_file], &[&src_dir], Some(expanded_code))
         .expect("parse_files should succeed");
 
     let pods: Vec<&TauriCommand> = commands.iter().filter(|c| c.name == "list_pods").collect();
@@ -438,5 +438,45 @@ fn parse_files_keeps_source_path_when_command_exists_in_both() {
     assert_eq!(
         pods[0].source_file, raw_path,
         "raw-source entry must win over the cargo-expand duplicate"
+    );
+}
+
+#[test]
+fn crate_name_for_source_dir_reads_the_sibling_manifest() {
+    let temp_dir = tempfile::tempdir().unwrap();
+
+    let core = temp_dir.path().join("core");
+    write_file(
+        &core.join("Cargo.toml"),
+        "[package]\nname = \"sieve-core\"\nversion = \"0.1.0\"\n",
+    );
+    assert_eq!(
+        crate_name_for_source_dir(&core.join("src")).as_deref(),
+        Some("sieve_core")
+    );
+
+    // `[lib] name` is what other crates write in paths.
+    let app = temp_dir.path().join("app");
+    write_file(
+        &app.join("Cargo.toml"),
+        "[package]\nname = \"my-app\"\n\n[lib]\nname = \"my_app_lib\"\n",
+    );
+    assert_eq!(
+        crate_name_for_source_dir(&app.join("src")).as_deref(),
+        Some("my_app_lib")
+    );
+
+    // No manifest next to the dir, or a virtual workspace manifest.
+    assert_eq!(
+        crate_name_for_source_dir(&temp_dir.path().join("nothing/src")),
+        None
+    );
+    write_file(
+        &temp_dir.path().join("ws/Cargo.toml"),
+        "[workspace]\nmembers = [\"core\"]\n",
+    );
+    assert_eq!(
+        crate_name_for_source_dir(&temp_dir.path().join("ws/src")),
+        None
     );
 }

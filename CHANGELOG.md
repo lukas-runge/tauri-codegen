@@ -4,6 +4,28 @@ All notable changes to `tauri-ts-generator` are listed here. Format
 loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [SemVer](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `[input] source_dirs = ["src-tauri/src", "crates/domain/src", ...]` scans
+  several source directories, e.g. every crate of a Cargo workspace whose
+  types the commands use. Previously the only option was
+  `source_dir = "."` plus a long `exclude` list. Commands are discovered
+  in all directories and types resolve across them. Each directory is its
+  own crate root: `crate::` paths no longer collide between crates that
+  have equally named modules, and `other_crate::path::Type` resolves into
+  the crate whose `Cargo.toml` sits next to the listed `src` directory.
+  `source_dir` keeps working; setting both, neither, or overlapping
+  directories is a config error.
+
+### Changed
+
+- Library API: `InputConfig::source_dir` is now `Option<PathBuf>`, next to
+  the new `source_dirs: Vec<PathBuf>`. `InputConfig` implements `Default`,
+  so struct literals can end in `..Default::default()`.
+  `InputConfig::source_roots()` returns the directories to scan.
+
 ## 2.1.0 — 2026-06-11
 
 ### Added

@@ -6,7 +6,7 @@ pub mod collect;
 
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cargo_expand::{find_cargo_manifest, run_cargo_expand};
 use crate::config::Config;
@@ -25,6 +25,13 @@ use crate::resolver::ModuleResolver;
 use crate::scanner::Scanner;
 
 pub use collect::TypeCollectionResult;
+
+/// A Rust file found by the scanner, together with the source directory it
+/// was found in (the file's crate root for module-path resolution).
+struct SourceFile {
+    path: PathBuf,
+    root: PathBuf,
+}
 
 /// Main pipeline for code generation
 pub struct Pipeline {
@@ -45,27 +52,24 @@ impl Pipeline {
         // the type-mapper's Unknown fallbacks, etc.).
         crate::diagnostics::install(self.diag);
 
-        self.diag.debug(format!(
-            "Scanning directory: {}",
-            config.input.source_dir.display()
-        ));
+        let source_dirs = config.input.source_roots()?;
 
         // Step 1: Scan for Rust files
-        let rust_files = self.scan_files(config)?;
+        let rust_files = self.scan_files(&source_dirs, &config.input.exclude)?;
 
         self.diag
             .debug(format!("Found {} Rust files", rust_files.len()));
 
         // Step 1.5: Optionally run cargo expand for macro-generated types
         let expanded_code = if config.input.use_cargo_expand {
-            self.run_cargo_expand(config)?
+            self.run_cargo_expand(config, source_dirs[0])?
         } else {
             None
         };
 
         // Step 2: Parse all files and build resolver
         let (mut commands, resolver, expanded_types) =
-            self.parse_files(&rust_files, config, expanded_code.as_deref())?;
+            self.parse_files(&rust_files, &source_dirs, expanded_code.as_deref())?;
 
         // Step 2.5: Filter out Tauri special types (State, Window, etc.) including aliases
         self.filter_tauri_special_args(&mut commands, &resolver);
@@ -151,17 +155,23 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Step 1: Scan for Rust files
-    fn scan_files(&self, config: &Config) -> Result<Vec<PathBuf>> {
-        let scanner = Scanner::new(
-            config.input.source_dir.clone(),
-            config.input.exclude.clone(),
-        );
-        scanner.scan()
+    /// Step 1: Scan every source directory for Rust files
+    fn scan_files(&self, source_dirs: &[&Path], exclude: &[String]) -> Result<Vec<SourceFile>> {
+        let mut files = Vec::new();
+        for dir in source_dirs {
+            self.diag
+                .debug(format!("Scanning directory: {}", dir.display()));
+            let scanner = Scanner::new(dir.to_path_buf(), exclude.to_vec());
+            files.extend(scanner.scan()?.into_iter().map(|path| SourceFile {
+                path,
+                root: dir.to_path_buf(),
+            }));
+        }
+        Ok(files)
     }
 
     /// Step 1.5: Run cargo expand if enabled
-    fn run_cargo_expand(&self, config: &Config) -> Result<Option<String>> {
+    fn run_cargo_expand(&self, config: &Config, source_dir: &Path) -> Result<Option<String>> {
         self.diag
             .warn("cargo expand is enabled. This will compile the project and may take a while.");
         self.diag.warn(
@@ -173,7 +183,7 @@ impl Pipeline {
             .input
             .cargo_manifest
             .clone()
-            .or_else(|| find_cargo_manifest(&config.input.source_dir));
+            .or_else(|| find_cargo_manifest(source_dir));
 
         let manifest_path = match manifest_path {
             Some(p) => p,
@@ -207,13 +217,21 @@ impl Pipeline {
     /// Step 2: Parse all files and build module resolver
     fn parse_files(
         &self,
-        rust_files: &[PathBuf],
-        config: &Config,
+        rust_files: &[SourceFile],
+        source_dirs: &[&Path],
         expanded_code: Option<&str>,
     ) -> Result<(Vec<TauriCommand>, ModuleResolver, Option<ParsedTypes>)> {
         let mut resolver = ModuleResolver::new();
-        let base_path = config.input.source_dir.clone();
         let mut commands: Vec<TauriCommand> = Vec::new();
+
+        // Let `other_crate::path::Type` resolve into the matching source dir.
+        for dir in source_dirs {
+            if let Some(name) = crate_name_for_source_dir(dir) {
+                self.diag
+                    .debug(format!("Crate '{}' is at {}", name, dir.display()));
+                resolver.register_crate(&name, dir);
+            }
+        }
 
         // Store expanded types temporarily - we'll register them AFTER parsing source files
         let mut expanded_types: Option<ParsedTypes> = None;
@@ -243,12 +261,16 @@ impl Pipeline {
         }
 
         // First, parse all source files - this registers types in the resolver
-        for file_path in rust_files {
+        for SourceFile {
+            path: file_path,
+            root,
+        } in rust_files
+        {
             let content = fs::read_to_string(file_path)
                 .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
 
             // Build resolver scope for this file
-            if let Err(e) = resolver.parse_file(file_path, &content, &base_path) {
+            if let Err(e) = resolver.parse_file(file_path, &content, root) {
                 self.diag.debug(format!(
                     "Failed to parse imports in {}: {}",
                     file_path.display(),
@@ -488,6 +510,23 @@ impl Pipeline {
             });
         }
     }
+}
+
+/// Name under which other crates refer to the crate whose sources live in
+/// `source_dir`, read from the `Cargo.toml` next to it (the usual
+/// `<crate>/src` layout). Honors `[lib] name`; otherwise the package name
+/// with `-` replaced by `_`, as Cargo does.
+fn crate_name_for_source_dir(source_dir: &Path) -> Option<String> {
+    let manifest_path = source_dir.parent()?.join("Cargo.toml");
+    let manifest: toml::Table = fs::read_to_string(manifest_path).ok()?.parse().ok()?;
+    let name_of = |section: &str| {
+        manifest
+            .get(section)?
+            .get("name")?
+            .as_str()
+            .map(|name| name.replace('-', "_"))
+    };
+    name_of("lib").or_else(|| name_of("package"))
 }
 
 #[cfg(test)]
