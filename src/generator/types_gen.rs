@@ -5,6 +5,9 @@ use crate::models::{
 };
 
 use super::{type_mapper::rust_to_typescript, GeneratorContext};
+use internal_newtype::{InnerShape, TypeIndex};
+
+mod internal_newtype;
 
 /// Generate TypeScript types file content
 pub fn generate_types_file(
@@ -26,8 +29,9 @@ pub fn generate_types_file(
     }
 
     // Generate types for enums
+    let index = TypeIndex::new(structs, enums, aliases);
     for e in enums {
-        output.push_str(&generate_enum_type(e, ctx));
+        output.push_str(&generate_enum_type(e, &index, ctx));
         output.push('\n');
     }
 
@@ -190,8 +194,9 @@ fn generate_interface(s: &RustStruct, ctx: &GeneratorContext) -> String {
     output
 }
 
-/// Generate a TypeScript type from a Rust enum
-fn generate_enum_type(e: &RustEnum, ctx: &GeneratorContext) -> String {
+/// Generate a TypeScript type from a Rust enum. `index` holds the other
+/// generated types, to check what internally tagged newtype variants wrap.
+fn generate_enum_type(e: &RustEnum, index: &TypeIndex, ctx: &GeneratorContext) -> String {
     let mut output = String::new();
 
     let type_name = ctx.format_type_name(&e.name);
@@ -206,7 +211,7 @@ fn generate_enum_type(e: &RustEnum, ctx: &GeneratorContext) -> String {
     let variants: Vec<String> = e
         .variants
         .iter()
-        .map(|variant| generate_variant(variant, &e.representation, ctx))
+        .map(|variant| generate_variant(variant, e, index, ctx))
         .collect();
 
     if variants.is_empty() {
@@ -228,10 +233,11 @@ fn generate_enum_type(e: &RustEnum, ctx: &GeneratorContext) -> String {
 
 fn generate_variant(
     variant: &crate::models::EnumVariant,
-    representation: &EnumRepresentation,
+    e: &RustEnum,
+    index: &TypeIndex,
     ctx: &GeneratorContext,
 ) -> String {
-    match representation {
+    match &e.representation {
         EnumRepresentation::External => match &variant.data {
             VariantData::Unit => string_literal(&variant.name),
             VariantData::Tuple(types) => {
@@ -261,17 +267,34 @@ fn generate_variant(
                 }
                 VariantData::Tuple(types) => {
                     // Serde's internal tagging doesn't support tuple variants (it errors at runtime).
-                    // However, if it's a newtype (single element), we can try to handle it.
-                    // Emit a warning and generate a best-effort type.
+                    // A newtype (single element) works when the inner type
+                    // serializes as an object: serde merges the tag into it.
                     if types.len() == 1 {
-                        // Newtype variant - could potentially work if inner type is a struct
-                        crate::diagnostics::warn(format!(
-                            "Internal tagging with newtype variant '{}' may not work \
-                            correctly with serde. Consider using adjacent tagging instead.",
-                            variant.name
-                        ));
                         let inner_ts = rust_to_typescript(&types[0], ctx);
+                        match index.inner_shape(&types[0]) {
+                            InnerShape::Object => {}
+                            // Only the tag is left; `{ … } & null` would be `never`.
+                            InnerShape::Empty => return format!("{{ {}: {} }}", tag, name),
+                            InnerShape::Rejected(what) => crate::diagnostics::warn(format!(
+                                "Internally tagged variant '{}' of enum '{}' wraps {}. Serde \
+                                can only add the tag to an object and fails at runtime \
+                                (\"cannot serialize tagged newtype variant\"). Use a struct \
+                                variant or adjacent tagging instead.",
+                                variant.name, e.name, what
+                            )),
+                            InnerShape::Uncertain(why) => crate::diagnostics::warn(format!(
+                                "The generated type of internally tagged variant '{}' of \
+                                enum '{}' may not match serde: {}. Consider adjacent \
+                                tagging instead.",
+                                variant.name, e.name, why
+                            )),
+                        }
                         // Generate: { tag: "Name" } & InnerType
+                        let inner_ts = if inner_ts.contains('|') {
+                            format!("({})", inner_ts)
+                        } else {
+                            inner_ts
+                        };
                         format!("({{ {}: {} }} & {})", tag, name, inner_ts)
                     } else {
                         crate::diagnostics::warn(format!(

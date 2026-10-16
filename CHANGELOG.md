@@ -45,6 +45,18 @@ versioning follows [SemVer](https://semver.org/).
   variant fields in every enum representation, externally tagged variant
   keys, and `tag`/`content` names. Identifiers stay bare, so existing
   output doesn't change.
+- Newtype variants of internally tagged enums (`#[serde(tag = "type")]
+  enum E { A(Inner) }`) no longer always warn "may not work correctly
+  with serde". Serde merges the tag into `Inner`'s map, so struct, map,
+  and internally/adjacently tagged enum payloads are fine and stay
+  silent. Strings, numbers, booleans, `Option`, sequences, tuples and
+  tuple structs fail at runtime and now get a warning saying so. Payloads
+  that depend on the value or don't match their generated type
+  (untagged enums, `serde_json::Value`, externally tagged enums with unit
+  variants, generic parameters) get a warning naming the reason. A unit
+  struct payload now generates `{ type: "a" }` instead of
+  `{ type: "a" } & null`, which TypeScript reduces to `never`, and union
+  payloads are parenthesized (`& (Rule | null)`).
 
 ### Changed
 

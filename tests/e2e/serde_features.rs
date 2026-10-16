@@ -178,3 +178,91 @@ fn untagged_enum_produces_union_of_payloads() {
     );
     assert!(types.contains("string") && types.contains("Msg"));
 }
+
+#[test]
+fn internally_tagged_newtype_variants_warn_only_when_serde_fails() {
+    // serde merges the tag into the inner value's map. Expected shapes and
+    // failures were checked with serde_json.
+    let project = Project::with_source(
+        r#"
+        use serde::Serialize;
+        use std::collections::HashMap;
+
+        #[derive(Serialize)]
+        pub struct Rule { pub name: String }
+        #[derive(Serialize)]
+        pub struct Marker;
+        #[derive(Serialize)]
+        pub struct Wrapped(Rule);
+        #[derive(Serialize)]
+        #[serde(tag = "kind")]
+        pub enum Inner { A { x: i32 } }
+        #[derive(Serialize)]
+        pub enum Plain { On, Off }
+
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename_all = "camelCase")]
+        pub enum Item {
+            Rule(Rule),
+            Marker(Marker),
+            Wrapped(Wrapped),
+            Map(HashMap<String, i32>),
+            Inner(Inner),
+            Text(String),
+            List(Vec<Rule>),
+            Maybe(Option<Rule>),
+            Plain(Plain),
+        }
+
+        #[tauri::command]
+        fn get() -> Item { todo!() }
+        "#,
+    );
+    let output = run_generate_ok(&project);
+    let types = std::fs::read_to_string(&project.types_out).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    for expected in [
+        r#"({ type: "rule" } & Rule)"#,
+        // `{"type":"marker"}`: a unit struct adds no fields, and
+        // `{ … } & null` would be `never`.
+        r#"| { type: "marker" }"#,
+        r#"({ type: "wrapped" } & Wrapped)"#,
+        r#"({ type: "map" } & Record<string, number>)"#,
+        r#"({ type: "inner" } & Inner)"#,
+        // Best effort for a variant serde rejects; parenthesized so `&`
+        // doesn't bind tighter than `|`.
+        r#"({ type: "maybe" } & (Rule | null))"#,
+    ] {
+        assert!(types.contains(expected), "missing `{expected}`:\n{types}");
+    }
+
+    // Object-like payloads are fine: no warning for them.
+    for ok in ["'rule'", "'marker'", "'wrapped'", "'map'", "'inner'"] {
+        assert!(
+            !stderr.contains(ok),
+            "unexpected warning for {ok}:\n{stderr}"
+        );
+    }
+    // These fail in serde_json ("cannot serialize tagged newtype variant").
+    for (variant, what) in [
+        ("'text'", "wraps a string"),
+        ("'list'", "wraps a sequence"),
+        ("'maybe'", "wraps an `Option`"),
+    ] {
+        assert!(
+            stderr
+                .lines()
+                .any(|l| l.contains(variant) && l.contains(what) && l.contains("fails at runtime")),
+            "expected a runtime-failure warning for {variant}:\n{stderr}"
+        );
+    }
+    // Serializes, but unit variants come out as `{"type":"plain","On":null}`,
+    // which the generated `"On" | "Off"` doesn't describe.
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.contains("'plain'") && l.contains("unit variants of `Plain`")),
+        "expected a warning for 'plain':\n{stderr}"
+    );
+}

@@ -138,7 +138,7 @@ fn test_generate_simple_enum() {
     };
 
     let ctx = default_ctx();
-    let output = generate_enum_type(&e, &ctx);
+    let output = generate_enum_type(&e, &TypeIndex::default(), &ctx);
 
     assert!(output.contains("export type Status ="));
     assert!(output.contains("\"Active\""));
@@ -168,7 +168,7 @@ fn test_generate_complex_enum_with_tuple() {
     };
 
     let ctx = default_ctx();
-    let output = generate_enum_type(&e, &ctx);
+    let output = generate_enum_type(&e, &TypeIndex::default(), &ctx);
 
     assert!(output.contains("export type Message ="));
     // External representation: { Text: string } | { Number: number }
@@ -206,7 +206,7 @@ fn test_generate_complex_enum_with_struct() {
     };
 
     let ctx = default_ctx();
-    let output = generate_enum_type(&e, &ctx);
+    let output = generate_enum_type(&e, &TypeIndex::default(), &ctx);
 
     assert!(output.contains("type: \"Admin\""));
     assert!(output.contains("permissions: string[]"));
@@ -475,7 +475,7 @@ fn test_enum_variant_explicit_rename_skips_camel_case() {
     };
 
     let ctx = default_ctx();
-    let output = generate_enum_type(&e, &ctx);
+    let output = generate_enum_type(&e, &TypeIndex::default(), &ctx);
 
     assert!(output.contains("\"Active\""));
     assert!(output.contains("\"INACTIVE_STATE\""));
@@ -514,7 +514,7 @@ fn test_enum_struct_variant_field_names() {
     };
 
     let ctx = default_ctx();
-    let output = generate_enum_type(&e, &ctx);
+    let output = generate_enum_type(&e, &TypeIndex::default(), &ctx);
 
     assert!(output.contains("user_id: number")); // Preserved as-is
     assert!(output.contains("TIMESTAMP: number")); // Explicit rename preserved
