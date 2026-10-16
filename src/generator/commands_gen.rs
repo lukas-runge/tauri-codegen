@@ -93,7 +93,7 @@ fn commands_use_channels(commands: &[TauriCommand]) -> bool {
 fn type_uses_channel(ty: &RustType) -> bool {
     match ty {
         RustType::Channel(_) => true,
-        RustType::Vec(inner) | RustType::Option(inner) | RustType::Result(inner) => {
+        RustType::Vec(inner) | RustType::Option(inner) | RustType::Result { ok: inner, .. } => {
             type_uses_channel(inner)
         }
         RustType::HashMap { key, value } => type_uses_channel(key) || type_uses_channel(value),

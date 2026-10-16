@@ -22,6 +22,7 @@ A powerful CLI tool to automatically generate TypeScript bindings from your Rust
     - Maps common Rust types (`String`, `Vec`, `Option`, `Result`) to TypeScript equivalents.
     - Handles external crate types like `chrono::DateTime`, `uuid::Uuid`, `url::Url`, and `rust_decimal::Decimal`.
 - **Async Handling**: Correctly generates `Promise<T>` for async commands.
+- **Error Types**: For commands returning `Result<T, E>` (directly or through an alias such as `type AppResult<T> = Result<T, AppError>`), `E` and the types it references are generated too, so the frontend can type the rejected promise. Only error types that `#[derive(Serialize)]` are generated: a hand-written `impl Serialize` (e.g. a `thiserror` enum sent as a string), `String`, or foreign types like `tauri::Error` are skipped.
 - **Tauri Integration**:
     - Automatically imports `invoke` from `@tauri-apps/api/core`.
     - Supports `#[tauri::command(rename_all = "...")]` to control argument casing (e.g. `snake_case`).
@@ -183,7 +184,7 @@ The generator maps Rust types to TypeScript as follows:
 | `Vec<T>` | `T[]` |
 | `HashMap<K, V>` | `Record<K, V>` (if K is string/number) |
 | `Box<T>`, `Arc<T>`, `Rc<T>`, `Cow<'_, T>` | `T` (transparent — matches serde's serialization) |
-| `Result<T, E>` | `Promise<T>` (in return types) |
+| `Result<T, E>` | `Promise<T>` (in return types); `E` is generated into the types file if it derives `Serialize` |
 | `()` / `Unit` | `void` |
 | `bytes::Bytes` | `number[]` |
 | `serde_json::Value` | `unknown` |

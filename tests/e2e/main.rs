@@ -19,6 +19,7 @@ mod init;
 mod path_qualified;
 mod recursive;
 mod rename_all;
+mod result_errors;
 mod serde_features;
 mod smart_pointers;
 mod snapshots;

@@ -25,6 +25,10 @@ pub struct ParsedTypes {
     pub structs: Vec<RustStruct>,
     pub enums: Vec<RustEnum>,
     pub aliases: Vec<RustTypeAlias>,
+    /// Names of the structs/enums carrying `#[derive(Serialize)]`. Only
+    /// filled for source input: in `cargo expand` output a derived impl
+    /// can't be told apart from a hand-written one.
+    pub derives_serialize: HashSet<String>,
 }
 
 /// Switches that control the discovery strategy.
@@ -131,6 +135,9 @@ fn parse_items(
         match item {
             Item::Struct(item_struct) => {
                 let name = item_struct.ident.to_string();
+                if !expanded && has_derive(&item_struct.attrs, &["Serialize"]) {
+                    parsed.derives_serialize.insert(name.clone());
+                }
                 let should_include = if include_all {
                     true
                 } else if expanded {
@@ -150,6 +157,9 @@ fn parse_items(
             }
             Item::Enum(item_enum) => {
                 let name = item_enum.ident.to_string();
+                if !expanded && has_derive(&item_enum.attrs, &["Serialize"]) {
+                    parsed.derives_serialize.insert(name.clone());
+                }
                 let should_include = if include_all {
                     true
                 } else if expanded {
@@ -216,6 +226,12 @@ fn parse_alias(item_type: &syn::ItemType, source_file: &Path) -> Option<RustType
 /// Check if a type has Serialize or Deserialize derive attribute
 /// This indicates the type is meant for serialization and should be exported
 fn is_serializable(attrs: &[syn::Attribute]) -> bool {
+    has_derive(attrs, &["Serialize", "Deserialize"])
+}
+
+/// Check if `#[derive(...)]` lists one of `derives`, either bare or as a
+/// qualified path like `serde::Serialize`.
+fn has_derive(attrs: &[syn::Attribute], derives: &[&str]) -> bool {
     for attr in attrs {
         if let Meta::List(meta_list) = &attr.meta {
             if meta_list.path.is_ident("derive") {
@@ -224,16 +240,8 @@ fn is_serializable(attrs: &[syn::Attribute]) -> bool {
                     syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
                 ) {
                     for path in nested {
-                        if let Some(ident) = path.get_ident() {
-                            let name = ident.to_string();
-                            if name == "Serialize" || name == "Deserialize" {
-                                return true;
-                            }
-                        }
-                        // Also check for fully qualified paths like serde::Serialize
                         if let Some(last) = path.segments.last() {
-                            let name = last.ident.to_string();
-                            if name == "Serialize" || name == "Deserialize" {
+                            if derives.iter().any(|d| last.ident == d) {
                                 return true;
                             }
                         }

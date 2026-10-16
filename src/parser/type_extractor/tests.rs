@@ -119,10 +119,40 @@ fn test_parse_option_custom_type() {
 fn test_parse_result_type() {
     let ty = parse_type_str("Result<User, String>");
     match parse_type(&ty) {
-        RustType::Result(ok) => match *ok {
-            RustType::Custom { name, .. } => assert_eq!(name, "User"),
-            other => panic!("Expected Custom inside Result, got {:?}", other),
-        },
+        RustType::Result { ok, err } => {
+            match *ok {
+                RustType::Custom { name, .. } => assert_eq!(name, "User"),
+                other => panic!("Expected Custom inside Result, got {:?}", other),
+            }
+            assert_eq!(err.as_deref(), Some(&RustType::Primitive("String".into())));
+        }
+        other => panic!("Expected Result, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_result_keeps_custom_error_type() {
+    let ty = parse_type_str("Result<User, crate::error::AppError>");
+    match parse_type(&ty) {
+        RustType::Result { err, .. } => {
+            assert_eq!(
+                err.as_deref(),
+                Some(&RustType::custom("crate::error::AppError"))
+            );
+        }
+        other => panic!("Expected Result, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_parse_single_argument_result_has_no_error_type() {
+    // `io::Result<T>` / `anyhow::Result<T>`: the error type lives in the alias.
+    let ty = parse_type_str("anyhow::Result<User>");
+    match parse_type(&ty) {
+        RustType::Result { ok, err } => {
+            assert_eq!(*ok, RustType::custom("User"));
+            assert!(err.is_none());
+        }
         other => panic!("Expected Result, got {:?}", other),
     }
 }
@@ -223,7 +253,7 @@ fn test_parse_nested_generics() {
 fn test_parse_result_with_vec() {
     let ty = parse_type_str("Result<Vec<Item>, String>");
     match parse_type(&ty) {
-        RustType::Result(ok) => match *ok {
+        RustType::Result { ok, .. } => match *ok {
             RustType::Vec(inner) => match *inner {
                 RustType::Custom { name, .. } => assert_eq!(name, "Item"),
                 other => panic!("Expected Custom, got {:?}", other),

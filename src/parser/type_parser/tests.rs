@@ -372,6 +372,34 @@ fn test_rename_all_fields_applies_to_every_struct_variant() {
 }
 
 #[test]
+fn test_derives_serialize_lists_only_serialize_derives() {
+    let code = r#"
+        #[derive(Serialize)]
+        pub struct A;
+        #[derive(Debug, serde::Serialize)]
+        pub enum B { X }
+        #[derive(Deserialize)]
+        pub struct OnlyDeserialize;
+        #[derive(Debug)]
+        pub enum ManualImpl { X }
+        impl serde::Serialize for ManualImpl {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str("x")
+            }
+        }
+    "#;
+
+    let parsed = parse_types(code, &test_path(), ParseOptions::SOURCE_ALL).unwrap();
+    let mut names: Vec<&str> = parsed
+        .derives_serialize
+        .iter()
+        .map(String::as_str)
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["A", "B"]);
+}
+
+#[test]
 fn test_serde_rename_field() {
     let code = r#"
         #[derive(Serialize)]

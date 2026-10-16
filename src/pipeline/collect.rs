@@ -6,6 +6,10 @@
 //! The walk is a fixpoint: start from command args and return types, then
 //! follow every nested custom type recorded in the resolver. `processed` and
 //! `resolved_types` together prevent cycles and double-counting.
+//!
+//! Error types of command results (`Result<T, AppError>`, also through an
+//! alias like `type AppResult<T> = Result<T, AppError>`) are seeded too, but
+//! only when they derive `Serialize`; see `resolve_and_enqueue_error`.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -14,8 +18,8 @@ use std::sync::Arc;
 
 use crate::diagnostics::Diagnostics;
 use crate::models::{
-    walk_custom_type_names, RustEnum, RustStruct, RustType, RustTypeAlias, TauriCommand,
-    VariantData,
+    walk_custom_type_names, walk_error_type_names, RustEnum, RustStruct, RustType, RustTypeAlias,
+    TauriCommand, VariantData,
 };
 use crate::parser::{parse_types, ParseOptions, ParsedTypes};
 use crate::resolver::{ModuleResolver, ResolutionResult};
@@ -69,6 +73,17 @@ fn collect_custom<'a, I: IntoIterator<Item = &'a RustType>>(roots: I) -> Vec<Str
 
 fn custom_types(ty: &RustType) -> Vec<String> {
     collect_custom(std::iter::once(ty))
+}
+
+/// Names inside the error types of `Result`s in `ty`, sorted and deduped.
+fn error_types(ty: &RustType) -> Vec<String> {
+    let mut set: HashSet<String> = HashSet::new();
+    walk_error_type_names(ty, &mut |name| {
+        set.insert(name.to_string());
+    });
+    let mut out: Vec<String> = set.into_iter().collect();
+    out.sort();
+    out
 }
 
 fn custom_types_from_variant(data: &VariantData) -> Vec<String> {
@@ -162,9 +177,55 @@ impl<'a> CollectState<'a> {
     }
 
     fn resolve_and_enqueue(&mut self, type_name: &str, from_file: &Path) {
+        let resolution = self.resolver.resolve_type(type_name, from_file);
+        self.enqueue_resolution(type_name, from_file, resolution);
+    }
+
+    /// Like `resolve_and_enqueue`, for the error type of a command result.
+    ///
+    /// Error types never appear in a generated signature, and the common
+    /// Tauri pattern is a `thiserror` enum with a hand-written
+    /// `impl Serialize` that sends a plain string. Its Rust shape says
+    /// nothing about the JSON, so only types that *derive* `Serialize` are
+    /// generated. Everything else (`String`, `tauri::Error`, hand-written
+    /// impls, types that don't resolve) is skipped with a debug message
+    /// only: error types used to be ignored entirely, so a warning would
+    /// be new noise for projects that work fine.
+    fn resolve_and_enqueue_error(&mut self, type_name: &str, from_file: &Path) {
+        let resolution = self.resolver.resolve_type(type_name, from_file);
+        let definition = match &resolution {
+            ResolutionResult::Found(source) => Some((simple_name(type_name), source)),
+            ResolutionResult::FoundWithAlias(source, original) => Some((original.as_str(), source)),
+            ResolutionResult::NotFound | ResolutionResult::Ambiguous(_) => None,
+        };
+        let derives_serialize = definition.is_some_and(|(name, source)| {
+            self.ensure_parsed(source)
+                && self
+                    .parsed_files
+                    .get(source)
+                    .is_some_and(|parsed| parsed.derives_serialize.contains(name))
+        });
+
+        if derives_serialize {
+            self.enqueue_resolution(type_name, from_file, resolution);
+        } else {
+            self.diag.debug(format!(
+                "Not generating error type '{}' (used in {}): no #[derive(Serialize)] definition found",
+                type_name,
+                from_file.display()
+            ));
+        }
+    }
+
+    fn enqueue_resolution(
+        &mut self,
+        type_name: &str,
+        from_file: &Path,
+        resolution: ResolutionResult,
+    ) {
         let name = simple_name(type_name).to_string();
 
-        match self.resolver.resolve_type(type_name, from_file) {
+        match resolution {
             ResolutionResult::Found(source) => {
                 if self.register_resolution(&name, &source) {
                     self.to_process.push((name, source));
@@ -203,6 +264,9 @@ impl<'a> CollectState<'a> {
             if let Some(ret_type) = &cmd.return_type {
                 for t in custom_types(ret_type) {
                     self.resolve_and_enqueue(&t, &cmd_file);
+                }
+                for t in error_types(ret_type) {
+                    self.resolve_and_enqueue_error(&t, &cmd_file);
                 }
             }
         }
@@ -297,6 +361,11 @@ impl<'a> CollectState<'a> {
                 let alias_source = alias.source_file.clone();
                 for t in custom_types(&alias.target) {
                     self.resolve_and_enqueue(&t, &alias_source);
+                }
+                // `type AppResult<T> = Result<T, AppError>` renders as
+                // `T`, but the error type still needs generating.
+                for t in error_types(&alias.target) {
+                    self.resolve_and_enqueue_error(&t, &alias_source);
                 }
             }
         }

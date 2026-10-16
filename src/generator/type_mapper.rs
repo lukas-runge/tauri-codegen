@@ -30,7 +30,7 @@ pub fn rust_to_typescript(rust_type: &RustType, ctx: &GeneratorContext) -> Strin
             format!("{} | null", inner_ts)
         }
 
-        RustType::Result(ok) => {
+        RustType::Result { ok, .. } => {
             // For Result types, we return the Ok type
             // The error will be handled by Promise rejection
             rust_to_typescript(ok, ctx)
@@ -203,14 +203,21 @@ mod tests {
     #[test]
     fn test_result_to_typescript() {
         let ctx = ctx_with_type("User");
-        let ty = RustType::Result(Box::new(RustType::custom("User")));
+        let ty = RustType::Result {
+            ok: Box::new(RustType::custom("User")),
+            err: Some(Box::new(RustType::custom("AppError"))),
+        };
+        // The error type rejects the promise; it is not part of the value.
         assert_eq!(rust_to_typescript(&ty, &ctx), "User");
     }
 
     #[test]
     fn test_result_with_vec() {
         let ctx = ctx_with_type("Item");
-        let ty = RustType::Result(Box::new(RustType::Vec(Box::new(RustType::custom("Item")))));
+        let ty = RustType::Result {
+            ok: Box::new(RustType::Vec(Box::new(RustType::custom("Item")))),
+            err: None,
+        };
         assert_eq!(rust_to_typescript(&ty, &ctx), "Item[]");
     }
 
@@ -365,9 +372,12 @@ mod tests {
     #[test]
     fn test_complex_nested_type() {
         let ctx = ctx_with_type("User");
-        let ty = RustType::Result(Box::new(RustType::Vec(Box::new(RustType::Option(
-            Box::new(RustType::custom("User")),
-        )))));
+        let ty = RustType::Result {
+            ok: Box::new(RustType::Vec(Box::new(RustType::Option(Box::new(
+                RustType::custom("User"),
+            ))))),
+            err: None,
+        };
         assert_eq!(rust_to_typescript(&ty, &ctx), "(User | null)[]");
     }
 }

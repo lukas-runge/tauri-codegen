@@ -317,9 +317,10 @@ fn test_complex_return_type() {
     let cmd = TauriCommand {
         name: "search".to_string(),
         args: vec![],
-        return_type: Some(RustType::Result(Box::new(RustType::Vec(Box::new(
-            RustType::custom("User"),
-        ))))),
+        return_type: Some(RustType::Result {
+            ok: Box::new(RustType::Vec(Box::new(RustType::custom("User")))),
+            err: None,
+        }),
         source_file: test_path(),
         rename_all: None,
     };

@@ -18,6 +18,16 @@ versioning follows [SemVer](https://semver.org/).
   the crate whose `Cargo.toml` sits next to the listed `src` directory.
   `source_dir` keeps working; setting both, neither, or overlapping
   directories is a config error.
+- Error types of command results are generated into the types file,
+  along with the types they reference, so frontends no longer have to
+  mirror them by hand. This works for `Result<T, AppError>` and through
+  aliases like `pub type AppResult<T> = Result<T, AppError>;` (which still
+  renders as `export type AppResult<T> = T;`). Only error types that
+  `#[derive(Serialize)]` are generated. Hand-written `impl Serialize` (the
+  usual `thiserror` + string pattern), `String`, and foreign or
+  unparseable types (`tauri::Error`, `Box<dyn Error>`) are skipped without
+  a warning. Command signatures don't change: they still return
+  `Promise<T>`, and the error type isn't imported into the commands file.
 
 ### Fixed
 
@@ -35,6 +45,12 @@ versioning follows [SemVer](https://semver.org/).
   the new `source_dirs: Vec<PathBuf>`. `InputConfig` implements `Default`,
   so struct literals can end in `..Default::default()`.
   `InputConfig::source_roots()` returns the directories to scan.
+- Library API: `RustType::Result` is now a struct variant
+  `Result { ok, err }` that keeps the error type (`None` for
+  single-argument aliases like `io::Result<T>`). The new
+  `walk_error_type_names` visits the names inside error types, which
+  `walk_custom_type_names` skips. `ParsedTypes` has a new
+  `derives_serialize` set.
 
 ## 2.1.0 — 2026-06-11
 

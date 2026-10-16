@@ -72,11 +72,16 @@ pub fn parse_type_with_context(ty: &Type, generic_params: &HashSet<String>) -> R
                         }
                     }
                     "Result" => {
-                        if let Some(inner) = extract_single_generic(&segment.arguments) {
-                            RustType::Result(Box::new(parse_type_with_context(
-                                &inner,
-                                generic_params,
-                            )))
+                        if let Some(ok) = extract_single_generic(&segment.arguments) {
+                            // Single-argument aliases (`io::Result<T>`) have
+                            // no error type to record.
+                            let err = extract_two_generics(&segment.arguments).map(|(_, err)| {
+                                Box::new(parse_type_with_context(&err, generic_params))
+                            });
+                            RustType::Result {
+                                ok: Box::new(parse_type_with_context(&ok, generic_params)),
+                                err,
+                            }
                         } else {
                             RustType::Unknown("Result<?>".to_string())
                         }

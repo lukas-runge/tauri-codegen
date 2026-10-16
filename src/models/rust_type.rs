@@ -7,8 +7,13 @@ pub enum RustType {
     Vec(Box<RustType>),
     /// `Option<T>`
     Option(Box<RustType>),
-    /// `Result<T, E>` - only Ok type is used for TypeScript generation
-    Result(Box<RustType>),
+    /// `Result<T, E>`. Only the Ok type appears in the TypeScript output;
+    /// the error type is kept so its definition can still be generated.
+    /// `err` is `None` for single-argument aliases like `io::Result<T>`.
+    Result {
+        ok: Box<RustType>,
+        err: Option<Box<RustType>>,
+    },
     /// `HashMap<K, V>`
     HashMap {
         key: Box<RustType>,
@@ -32,7 +37,9 @@ pub enum RustType {
     Unknown(String),
 }
 
-/// Walk a `RustType` tree, invoking `visit` for every `Custom(name)` node.
+/// Walk a `RustType` tree, invoking `visit` for every `Custom(name)` node
+/// that shows up in the TypeScript rendering of the type. The error side
+/// of `Result<T, E>` is skipped (see [`walk_error_type_names`]).
 ///
 /// Both the command collector (what types are reachable?) and the
 /// import collector (what types are referenced in a generated file?)
@@ -47,7 +54,7 @@ pub fn walk_custom_type_names<F: FnMut(&str)>(ty: &RustType, visit: &mut F) {
         }
         RustType::Vec(inner)
         | RustType::Option(inner)
-        | RustType::Result(inner)
+        | RustType::Result { ok: inner, .. }
         | RustType::Channel(inner) => {
             walk_custom_type_names(inner, visit);
         }
@@ -58,6 +65,41 @@ pub fn walk_custom_type_names<F: FnMut(&str)>(ty: &RustType, visit: &mut F) {
         RustType::Tuple(types) => {
             for t in types {
                 walk_custom_type_names(t, visit);
+            }
+        }
+        RustType::Primitive(_) | RustType::Generic(_) | RustType::Unit | RustType::Unknown(_) => {}
+    }
+}
+
+/// Walk a `RustType` tree, invoking `visit` for every `Custom(name)` node
+/// inside the error type of a `Result<T, E>` — the names
+/// [`walk_custom_type_names`] skips. Commands reject their promise with
+/// the serialized error, so these types are worth generating even though
+/// no signature mentions them.
+pub fn walk_error_type_names<F: FnMut(&str)>(ty: &RustType, visit: &mut F) {
+    match ty {
+        RustType::Result { ok, err } => {
+            walk_error_type_names(ok, visit);
+            if let Some(err) = err {
+                walk_custom_type_names(err, visit);
+                walk_error_type_names(err, visit);
+            }
+        }
+        RustType::Custom { args, .. } => {
+            for arg in args {
+                walk_error_type_names(arg, visit);
+            }
+        }
+        RustType::Vec(inner) | RustType::Option(inner) | RustType::Channel(inner) => {
+            walk_error_type_names(inner, visit);
+        }
+        RustType::HashMap { key, value } => {
+            walk_error_type_names(key, visit);
+            walk_error_type_names(value, visit);
+        }
+        RustType::Tuple(types) => {
+            for t in types {
+                walk_error_type_names(t, visit);
             }
         }
         RustType::Primitive(_) | RustType::Generic(_) | RustType::Unit | RustType::Unknown(_) => {}
@@ -112,10 +154,55 @@ mod tests {
         assert_eq!(collect(&ty), vec!["User"]);
     }
 
+    fn collect_errors(ty: &RustType) -> Vec<String> {
+        let mut set: HashSet<String> = HashSet::new();
+        walk_error_type_names(ty, &mut |n| {
+            set.insert(n.to_string());
+        });
+        let mut out: Vec<String> = set.into_iter().collect();
+        out.sort();
+        out
+    }
+
+    fn result(ok: RustType, err: Option<RustType>) -> RustType {
+        RustType::Result {
+            ok: Box::new(ok),
+            err: err.map(Box::new),
+        }
+    }
+
     #[test]
     fn walks_into_result() {
-        let ty = RustType::Result(Box::new(RustType::custom("Response")));
+        let ty = result(RustType::custom("Response"), None);
         assert_eq!(collect(&ty), vec!["Response"]);
+    }
+
+    #[test]
+    fn result_error_is_walked_separately() {
+        let ty = result(
+            RustType::custom("Response"),
+            Some(RustType::Custom {
+                name: "AppError".into(),
+                args: vec![RustType::custom("Detail")],
+            }),
+        );
+        assert_eq!(collect(&ty), vec!["Response"]);
+        assert_eq!(collect_errors(&ty), vec!["AppError", "Detail"]);
+    }
+
+    #[test]
+    fn error_walk_finds_results_nested_in_other_types() {
+        // `AppResult<Result<User, Inner>>`-style nesting and Results in
+        // generic args: every error type is found, no Ok-side name is.
+        let ty = RustType::Custom {
+            name: "Page".into(),
+            args: vec![RustType::Vec(Box::new(result(
+                result(RustType::custom("User"), Some(RustType::custom("Inner"))),
+                Some(RustType::custom("Outer")),
+            )))],
+        };
+        assert_eq!(collect_errors(&ty), vec!["Inner", "Outer"]);
+        assert!(collect_errors(&result(RustType::custom("User"), None)).is_empty());
     }
 
     #[test]

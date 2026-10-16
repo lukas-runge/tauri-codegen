@@ -39,7 +39,7 @@ fn test_parse_simple_commands_fixture() {
     let get_user = commands.iter().find(|c| c.name == "get_user").unwrap();
     assert_eq!(get_user.args.len(), 1);
     match &get_user.return_type {
-        Some(RustType::Result(inner)) => match inner.as_ref() {
+        Some(RustType::Result { ok: inner, .. }) => match inner.as_ref() {
             RustType::Custom { name, .. } => assert_eq!(name, "User"),
             _ => panic!("Expected Custom type inside Result"),
         },
