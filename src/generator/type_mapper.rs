@@ -52,7 +52,7 @@ pub fn rust_to_typescript(rust_type: &RustType, ctx: &GeneratorContext) -> Strin
                 // numbers/strings are fine
                 RustType::Primitive(_) => true,
                 // Custom types (enums, newtypes) are assumed to be valid string/number keys
-                RustType::Custom { name: _, .. } => true,
+                RustType::Custom { .. } => true,
                 // Generic Params are assumed to be valid
                 RustType::Generic(_) => true,
                 // Complex types (Vec, Option, etc) cannot be keys in TS Record

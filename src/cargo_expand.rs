@@ -108,10 +108,7 @@ pub(crate) fn find_cargo_manifest(source_dir: &Path) -> Option<PathBuf> {
             return Some(cargo_toml);
         }
 
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
-        }
+        current = current.parent()?;
     }
 }
 
