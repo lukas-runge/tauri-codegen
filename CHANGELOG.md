@@ -38,6 +38,13 @@ versioning follows [SemVer](https://semver.org/).
   1.0.183+) is supported too; a variant's own `rename_all` overrides it,
   and a field's `rename` overrides both. An enum's `rename_all` still
   renames only the variants, as in serde.
+- Property keys that aren't valid identifiers are quoted:
+  `"date-part": string` instead of the invalid `date-part: string`. This
+  covers `kebab-case`/`SCREAMING-KEBAB-CASE` from `rename_all`, explicit
+  `rename`s like `"x-spam"` or `"2fa"`, optional (`?`) fields, struct
+  variant fields in every enum representation, externally tagged variant
+  keys, and `tag`/`content` names. Identifiers stay bare, so existing
+  output doesn't change.
 
 ### Changed
 

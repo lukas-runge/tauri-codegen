@@ -95,10 +95,8 @@ fn screaming_snake_and_kebab() {
         types.contains("USER_ID: number"),
         "SCREAMING_SNAKE:\n{types}"
     );
-    assert!(
-        types.contains(r#""user-id": number"#) || types.contains("user-id: number"),
-        "kebab:\n{types}"
-    );
+    // `user-id` is not an identifier, so the key must be quoted.
+    assert!(types.contains(r#""user-id": number"#), "kebab:\n{types}");
 }
 
 #[test]
@@ -228,6 +226,60 @@ fn variant_rename_all_and_rename_all_fields_match_serde() {
         r#"{ some_variant: { DatePart: string } }"#,
         // {"DatePart":"x"}
         r#"{ DatePart: string }"#,
+    ] {
+        assert!(types.contains(expected), "missing `{expected}`:\n{types}");
+    }
+}
+
+#[test]
+fn non_identifier_property_keys_are_quoted() {
+    let types = types_for(
+        r#"
+        use serde::Serialize;
+        use tauri_ts_generator::TS;
+
+        #[derive(Serialize, TS)]
+        #[serde(rename_all = "kebab-case")]
+        pub struct Headers {
+            pub content_type: String,
+            #[serde(rename = "x-spam")]
+            #[ts(optional)]
+            pub spam: Option<String>,
+            #[serde(rename = "2fa")]
+            pub two_factor: bool,
+            #[serde(rename = "say \"hi\"")]
+            pub quoted: i32,
+            pub plain: i32,
+        }
+
+        #[derive(Serialize)]
+        #[serde(rename_all = "kebab-case", rename_all_fields = "SCREAMING-KEBAB-CASE")]
+        pub enum External { SomeVariant { date_part: String }, Unit }
+
+        #[derive(Serialize)]
+        #[serde(tag = "msg-type", rename_all_fields = "kebab-case")]
+        pub enum Internal { Ping { reply_to: String } }
+
+        #[derive(Serialize)]
+        #[serde(tag = "t", content = "the-content")]
+        pub enum Adjacent { A(i32) }
+
+        #[tauri::command]
+        fn x() -> Result<(Headers, External, Internal, Adjacent), String> { todo!() }
+        "#,
+    );
+
+    for expected in [
+        r#""content-type": string;"#,
+        r#""x-spam"?: string;"#,
+        r#""2fa": boolean;"#,
+        r#""say \"hi\"": number;"#,
+        // Valid identifiers stay bare.
+        "  plain: number;",
+        r#"{ "some-variant": { "DATE-PART": string } }"#,
+        r#"| "unit""#,
+        r#"{ "msg-type": "Ping", "reply-to": string }"#,
+        r#"{ t: "A"; "the-content": number }"#,
     ] {
         assert!(types.contains(expected), "missing `{expected}`:\n{types}");
     }

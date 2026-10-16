@@ -703,3 +703,33 @@ fn test_generate_interface_without_flatten_remains_interface() {
         "Should not be a type alias"
     );
 }
+
+#[test]
+fn test_property_key_quotes_only_non_identifiers() {
+    for name in [
+        "id",
+        "datePart",
+        "date_part",
+        "_private",
+        "$ref",
+        "type",
+        "größe",
+        "A1",
+    ] {
+        assert_eq!(property_key(name), name, "{name} is an identifier");
+    }
+    assert_eq!(property_key("date-part"), r#""date-part""#);
+    assert_eq!(property_key("DATE-PART"), r#""DATE-PART""#);
+    assert_eq!(property_key("2fa"), r#""2fa""#);
+    assert_eq!(property_key("with space"), r#""with space""#);
+    assert_eq!(property_key("a.b"), r#""a.b""#);
+    assert_eq!(property_key(""), r#""""#);
+}
+
+#[test]
+fn test_string_literal_escapes() {
+    assert_eq!(string_literal("plain"), r#""plain""#);
+    assert_eq!(string_literal(r#"say "hi""#), r#""say \"hi\"""#);
+    assert_eq!(string_literal(r"back\slash"), r#""back\\slash""#);
+    assert_eq!(string_literal("line\nbreak\u{1}"), r#""line\nbreak\u0001""#);
+}

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::models::{
     EnumRepresentation, RustEnum, RustStruct, RustTypeAlias, StructShape, VariantData,
 };
@@ -56,7 +58,7 @@ fn render_field(
 
     // Field name already reflects serde configuration from parser
     // (rename, rename_all, or original name if no serde attrs)
-    let field_name = field.name.clone();
+    let field_name = property_key(&field.name).into_owned();
 
     (field_name, optional_marker, ts_type)
 }
@@ -231,7 +233,7 @@ fn generate_variant(
 ) -> String {
     match representation {
         EnumRepresentation::External => match &variant.data {
-            VariantData::Unit => format!("\"{}\"", variant.name),
+            VariantData::Unit => string_literal(&variant.name),
             VariantData::Tuple(types) => {
                 let ts_types: Vec<_> = types.iter().map(|t| rust_to_typescript(t, ctx)).collect();
                 let inner = if ts_types.len() == 1 {
@@ -239,21 +241,23 @@ fn generate_variant(
                 } else {
                     format!("[{}]", ts_types.join(", "))
                 };
-                format!("{{ {}: {} }}", variant.name, inner)
+                format!("{{ {}: {} }}", property_key(&variant.name), inner)
             }
             VariantData::Struct(fields) => {
                 let inner = generate_struct_body(fields, ctx);
-                format!("{{ {}: {} }}", variant.name, inner)
+                format!("{{ {}: {} }}", property_key(&variant.name), inner)
             }
         },
         EnumRepresentation::Internal { tag } => {
+            let tag = property_key(tag);
+            let name = string_literal(&variant.name);
             match &variant.data {
-                VariantData::Unit => format!("{{ {}: \"{}\" }}", tag, variant.name),
+                VariantData::Unit => format!("{{ {}: {} }}", tag, name),
                 VariantData::Struct(fields) => {
                     let mut body = generate_struct_body(fields, ctx);
                     // Remove opening brace and insert tag
                     body.remove(0); // remove '{'
-                    format!("{{ {}: \"{}\",{}", tag, variant.name, body)
+                    format!("{{ {}: {},{}", tag, name, body)
                 }
                 VariantData::Tuple(types) => {
                     // Serde's internal tagging doesn't support tuple variants (it errors at runtime).
@@ -268,7 +272,7 @@ fn generate_variant(
                         ));
                         let inner_ts = rust_to_typescript(&types[0], ctx);
                         // Generate: { tag: "Name" } & InnerType
-                        format!("({{ {}: \"{}\" }} & {})", tag, variant.name, inner_ts)
+                        format!("({{ {}: {} }} & {})", tag, name, inner_ts)
                     } else {
                         crate::diagnostics::warn(format!(
                             "Internal tagging does not support tuple variants with \
@@ -277,33 +281,33 @@ fn generate_variant(
                             variant.name
                         ));
                         // Fall back to just the tag since this won't work in serde anyway
-                        format!("{{ {}: \"{}\" }}", tag, variant.name)
+                        format!("{{ {}: {} }}", tag, name)
                     }
                 }
             }
         }
-        EnumRepresentation::Adjacent { tag, content } => match &variant.data {
-            VariantData::Unit => format!("{{ {}: \"{}\" }}", tag, variant.name),
-            VariantData::Tuple(types) => {
-                let ts_types: Vec<_> = types.iter().map(|t| rust_to_typescript(t, ctx)).collect();
-                let inner = if ts_types.len() == 1 {
-                    ts_types[0].clone()
-                } else {
-                    format!("[{}]", ts_types.join(", "))
-                };
-                format!(
-                    "{{ {}: \"{}\"; {}: {} }}",
-                    tag, variant.name, content, inner
-                )
+        EnumRepresentation::Adjacent { tag, content } => {
+            let tag = property_key(tag);
+            let content = property_key(content);
+            let name = string_literal(&variant.name);
+            match &variant.data {
+                VariantData::Unit => format!("{{ {}: {} }}", tag, name),
+                VariantData::Tuple(types) => {
+                    let ts_types: Vec<_> =
+                        types.iter().map(|t| rust_to_typescript(t, ctx)).collect();
+                    let inner = if ts_types.len() == 1 {
+                        ts_types[0].clone()
+                    } else {
+                        format!("[{}]", ts_types.join(", "))
+                    };
+                    format!("{{ {}: {}; {}: {} }}", tag, name, content, inner)
+                }
+                VariantData::Struct(fields) => {
+                    let inner = generate_struct_body(fields, ctx);
+                    format!("{{ {}: {}; {}: {} }}", tag, name, content, inner)
+                }
             }
-            VariantData::Struct(fields) => {
-                let inner = generate_struct_body(fields, ctx);
-                format!(
-                    "{{ {}: \"{}\"; {}: {} }}",
-                    tag, variant.name, content, inner
-                )
-            }
-        },
+        }
         EnumRepresentation::Untagged => match &variant.data {
             VariantData::Unit => "null".to_string(), // Untagged unit matches null? Or nothing? Serde says it errors if it can't match. Usually untagged is for matching shapes.
             VariantData::Tuple(types) => {
@@ -335,6 +339,49 @@ fn generate_alias_type(alias: &RustTypeAlias, ctx: &GeneratorContext) -> String 
         "export type {}{} = {};\n",
         alias_name, generics_str, target_ts
     )
+}
+
+/// Render `name` as a TypeScript object property key: bare when it's a
+/// valid identifier (`datePart`, `type`), quoted otherwise (`"date-part"`,
+/// `"2fa"`). Serde field names come from `rename`/`rename_all` and can
+/// contain anything.
+fn property_key(name: &str) -> Cow<'_, str> {
+    if is_identifier(name) {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(string_literal(name))
+    }
+}
+
+/// Whether `name` can be written as a bare property key. Reserved words
+/// are fine as property names (`{ type: string }`), so only the character
+/// rules of identifiers matter.
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let is_start = |c: char| c.is_alphabetic() || c == '_' || c == '$';
+    is_start(first) && chars.all(|c| is_start(c) || c.is_alphanumeric())
+}
+
+/// Render `value` as a double-quoted TypeScript string literal.
+fn string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn generate_struct_body(fields: &[crate::models::StructField], ctx: &GeneratorContext) -> String {
