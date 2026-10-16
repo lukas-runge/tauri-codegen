@@ -15,10 +15,16 @@ use crate::utils::{
 };
 
 /// Serde container attributes that affect naming / enum representation.
+/// Also used for enum variants, where only `rename_all` is meaningful.
 #[derive(Debug, Default)]
 pub(super) struct SerdeContainerAttrs {
-    /// Value of rename_all attribute (e.g., "camelCase", "snake_case")
+    /// Value of rename_all attribute (e.g., "camelCase", "snake_case").
+    /// On a struct it renames the fields; on an enum only the variants; on
+    /// an enum variant the fields of that variant.
     pub rename_all: Option<String>,
+    /// Value of rename_all_fields attribute (enums only): rename_all for the
+    /// fields of every struct variant.
+    pub rename_all_fields: Option<String>,
     /// Value of tag attribute (e.g., "type")
     pub tag: Option<String>,
     /// Value of content attribute (e.g., "content")
@@ -179,7 +185,8 @@ pub(super) fn has_skip_serializing_if_none(attrs: &[syn::Attribute]) -> bool {
     result
 }
 
-/// Parse serde container attributes (rename_all, tag, content, untagged).
+/// Parse serde container attributes (rename_all, rename_all_fields, tag,
+/// content, untagged).
 pub(super) fn parse_serde_container_attrs(attrs: &[syn::Attribute]) -> SerdeContainerAttrs {
     let mut result = SerdeContainerAttrs::default();
     for_each_meta_in(attrs, "serde", |meta| {
@@ -187,6 +194,8 @@ pub(super) fn parse_serde_container_attrs(attrs: &[syn::Attribute]) -> SerdeCont
             Meta::NameValue(nv) => {
                 if nv.path.is_ident("rename_all") {
                     result.rename_all = string_value(nv);
+                } else if nv.path.is_ident("rename_all_fields") {
+                    result.rename_all_fields = string_value(nv);
                 } else if nv.path.is_ident("tag") {
                     result.tag = string_value(nv);
                 } else if nv.path.is_ident("content") {
@@ -275,6 +284,20 @@ mod tests {
         let parsed = parse_serde_container_attrs(&attrs);
         assert_eq!(parsed.rename_all.as_deref(), Some("camelCase"));
         assert_eq!(parsed.tag.as_deref(), Some("type"));
+    }
+
+    #[test]
+    fn parse_container_attrs_keeps_rename_all_and_rename_all_fields_apart() {
+        let attrs = attrs_of(
+            r#"
+            #[derive(Serialize)]
+            #[serde(rename_all = "snake_case", rename_all_fields = "camelCase")]
+            pub enum E { A { x_y: i32 } }
+            "#,
+        );
+        let parsed = parse_serde_container_attrs(&attrs);
+        assert_eq!(parsed.rename_all.as_deref(), Some("snake_case"));
+        assert_eq!(parsed.rename_all_fields.as_deref(), Some("camelCase"));
     }
 
     #[test]

@@ -309,6 +309,68 @@ fn test_parse_enum_with_struct_variant() {
     }
 }
 
+/// Field names of the struct variant at `index`.
+fn variant_field_names(e: &crate::models::RustEnum, index: usize) -> Vec<&str> {
+    match &e.variants[index].data {
+        VariantData::Struct(fields) => fields.iter().map(|f| f.name.as_str()).collect(),
+        other => panic!("Expected Struct variant, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_variant_rename_all_renames_that_variants_fields() {
+    let code = r#"
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename_all = "camelCase")]
+        pub enum Test {
+            #[serde(rename_all = "camelCase")]
+            CurrentDate { zone: Option<String>, date_part: String },
+            Plain { date_part: String },
+        }
+    "#;
+
+    let ParsedTypes { enums, .. } = parse_types(code, &test_path(), ParseOptions::SOURCE).unwrap();
+    let e = &enums[0];
+
+    assert_eq!(e.variants[0].name, "currentDate");
+    assert_eq!(variant_field_names(e, 0), vec!["zone", "datePart"]);
+    // Container-level rename_all renames the variant, not its fields.
+    assert_eq!(e.variants[1].name, "plain");
+    assert_eq!(variant_field_names(e, 1), vec!["date_part"]);
+}
+
+#[test]
+fn test_rename_all_fields_applies_to_every_struct_variant() {
+    let code = r#"
+        #[derive(Serialize)]
+        #[serde(rename_all_fields = "camelCase")]
+        pub enum Test {
+            A { date_part: String },
+            #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+            B {
+                date_part: String,
+                #[serde(rename = "explicit")]
+                other_field: i32,
+            },
+            C(String),
+        }
+    "#;
+
+    let ParsedTypes { enums, .. } = parse_types(code, &test_path(), ParseOptions::SOURCE).unwrap();
+    let e = &enums[0];
+
+    // rename_all_fields leaves variant names alone.
+    assert_eq!(e.variants[0].name, "A");
+    assert_eq!(variant_field_names(e, 0), vec!["datePart"]);
+    // Variant-level rename_all beats rename_all_fields; field-level rename
+    // beats both.
+    assert_eq!(variant_field_names(e, 1), vec!["DATE_PART", "explicit"]);
+    match &e.variants[0].data {
+        VariantData::Struct(fields) => assert!(fields[0].has_explicit_rename),
+        other => panic!("Expected Struct variant, got {:?}", other),
+    }
+}
+
 #[test]
 fn test_serde_rename_field() {
     let code = r#"

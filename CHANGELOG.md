@@ -19,6 +19,16 @@ versioning follows [SemVer](https://semver.org/).
   `source_dir` keeps working; setting both, neither, or overlapping
   directories is a config error.
 
+### Fixed
+
+- `#[serde(rename_all = "...")]` on an enum variant now renames that
+  struct variant's fields, e.g. `date_part` → `datePart`. It used to be
+  ignored, so the generated field names didn't match what serde
+  sends. The enum-level `#[serde(rename_all_fields = "...")]` (serde
+  1.0.183+) is supported too; a variant's own `rename_all` overrides it,
+  and a field's `rename` overrides both. An enum's `rename_all` still
+  renames only the variants, as in serde.
+
 ### Changed
 
 - Library API: `InputConfig::source_dir` is now `Option<PathBuf>`, next to

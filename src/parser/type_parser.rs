@@ -464,6 +464,14 @@ fn parse_enum(item: &ItemEnum, source_file: &Path) -> Option<RustEnum> {
             let has_explicit_rename =
                 explicit_rename.is_some() || container_attrs.rename_all.is_some();
 
+            // Field names of a struct variant follow the variant's own
+            // `rename_all`, falling back to the container's
+            // `rename_all_fields`. The container's `rename_all` renames
+            // variants only, never their fields — same as serde.
+            let fields_rename_all = parse_serde_container_attrs(&variant.attrs)
+                .rename_all
+                .or_else(|| container_attrs.rename_all_fields.clone());
+
             let data = match &variant.fields {
                 Fields::Unit => VariantData::Unit,
                 Fields::Unnamed(unnamed) => {
@@ -487,13 +495,17 @@ fn parse_enum(item: &ItemEnum, source_file: &Path) -> Option<RustEnum> {
                             let field_name = field.ident.as_ref()?.to_string();
                             let field_type = parse_type_with_context(&field.ty, &generic_params);
                             let explicit_rename = get_serde_rename(&field.attrs);
-                            let final_name = explicit_rename.clone().unwrap_or(field_name);
+                            let final_name = explicit_rename
+                                .clone()
+                                .or_else(|| apply_rename_all(&field_name, &fields_rename_all))
+                                .unwrap_or(field_name);
                             let use_optional = has_ts_optional(&field.attrs, &field_type);
                             let is_flatten = has_serde_flatten(&field.attrs);
                             Some(StructField {
                                 name: final_name,
                                 ty: field_type,
-                                has_explicit_rename: explicit_rename.is_some(),
+                                has_explicit_rename: explicit_rename.is_some()
+                                    || fields_rename_all.is_some(),
                                 use_optional,
                                 is_flatten,
                             })

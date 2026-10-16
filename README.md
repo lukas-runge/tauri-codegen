@@ -12,6 +12,7 @@ A powerful CLI tool to automatically generate TypeScript bindings from your Rust
     - Field and variant names in generated TypeScript **match exactly** what serde emits in JSON at runtime.
     - Respects `#[serde(rename = "...")]` on fields and variants.
     - Handles `#[serde(rename_all = "...")]` for enums and structs (`lowercase`, `UPPERCASE`, `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`, `SCREAMING-KEBAB-CASE`).
+    - Handles `rename_all` on enum variants (renames that variant's fields) and `#[serde(rename_all_fields = "...")]` on enums (renames the fields of every struct variant). As in serde, an enum's own `rename_all` renames only its variants.
     - Supports `#[serde(tag = "...")]`, `#[serde(content = "...")]`, and `#[serde(untagged)]` enum representations.
     - Supports `#[serde(flatten)]` to generate TypeScript intersection types.
     - Fields with `#[serde(skip)]` are excluded from TypeScript output.

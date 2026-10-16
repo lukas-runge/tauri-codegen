@@ -171,3 +171,64 @@ fn enum_with_rename_all_transforms_variants() {
     assert!(types.contains(r#""IN_PROGRESS""#), "{types}");
     assert!(types.contains(r#""NOT_FOUND""#), "{types}");
 }
+
+#[test]
+fn variant_rename_all_and_rename_all_fields_match_serde() {
+    // Expected field names come from running serde_json on these enums.
+    let types = types_for(
+        r#"
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename_all = "camelCase")]
+        pub enum Internal {
+            #[serde(rename_all = "camelCase")]
+            CurrentDate { zone: Option<String>, date_part: String },
+            Plain { date_part: String },
+        }
+
+        #[derive(Serialize)]
+        #[serde(tag = "t", content = "c", rename_all_fields = "camelCase")]
+        pub enum Adjacent {
+            A { date_part: String },
+            #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+            B {
+                date_part: String,
+                #[serde(rename = "explicit")]
+                other_field: i32,
+            },
+        }
+
+        #[derive(Serialize)]
+        #[serde(rename_all = "snake_case", rename_all_fields = "PascalCase")]
+        pub enum External { SomeVariant { date_part: String } }
+
+        #[derive(Serialize)]
+        #[serde(untagged)]
+        pub enum Untagged {
+            #[serde(rename_all = "PascalCase")]
+            A { date_part: String },
+        }
+
+        #[tauri::command]
+        fn x() -> Result<(Internal, Adjacent, External, Untagged), String> { todo!() }
+        "#,
+    );
+
+    for expected in [
+        // {"type":"currentDate","zone":null,"datePart":"x"}
+        r#"{ type: "currentDate", zone: string | null; datePart: string }"#,
+        // {"type":"plain","date_part":"x"}
+        r#"{ type: "plain", date_part: string }"#,
+        // {"t":"A","c":{"datePart":"x"}}
+        r#"{ t: "A"; c: { datePart: string } }"#,
+        // {"t":"B","c":{"DATE_PART":"x","explicit":1}}
+        r#"{ t: "B"; c: { DATE_PART: string; explicit: number } }"#,
+        // {"some_variant":{"DatePart":"x"}}
+        r#"{ some_variant: { DatePart: string } }"#,
+        // {"DatePart":"x"}
+        r#"{ DatePart: string }"#,
+    ] {
+        assert!(types.contains(expected), "missing `{expected}`:\n{types}");
+    }
+}
